@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NSL Greenhouse Cloud</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#0b1020;color:#edf2f7;font-family:Inter,system-ui,sans-serif}
+main{max-width:1100px;margin:auto;padding:28px}.top{display:flex;justify-content:space-between;align-items:center;gap:16px}
+h1{margin:0}.sub{color:#98a2b3}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px;margin-top:22px}
+.card{background:#141c2f;border:1px solid #28334d;border-radius:18px;padding:18px}.label{color:#98a2b3}.value{font-size:30px;font-weight:800;margin-top:7px}
+.panel{margin-top:18px;background:#141c2f;border:1px solid #28334d;border-radius:18px;padding:20px}
+.controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}
+label{display:grid;gap:6px;color:#b6c0d2}input{width:100%;padding:11px;border-radius:10px;border:1px solid #35415d;background:#0d1425;color:white}
+button{border:0;border-radius:10px;padding:11px 16px;background:#4ade80;color:#06120a;font-weight:800;cursor:pointer}
+.status{padding:8px 12px;border-radius:999px;background:#18263a}.danger{color:#ff7777}.ok{color:#5ee58b}
+table{width:100%;border-collapse:collapse;margin-top:15px}td,th{text-align:left;padding:9px;border-bottom:1px solid #28334d}
+</style>
+</head>
+<body>
+<main>
+<div class="top"><div><h1>🌱 NSL Greenhouse Cloud</h1><div class="sub">ESP32 → Server/Database → Web</div></div><span id="status" class="status">Chưa kết nối</span></div>
+<div class="grid">
+<div class="card">🌱 Đất A<div id="soilA" class="value">--%</div></div>
+<div class="card">🌱 Đất B<div id="soilB" class="value">--%</div></div>
+<div class="card">🌡️ Nhiệt độ<div id="temp" class="value">-- °C</div></div>
+<div class="card">💧 Độ ẩm KK<div id="hum" class="value">-- %</div></div>
+<div class="card">💨 Khói<div id="smoke" class="value">--</div></div>
+<div class="card">🌧️ Mưa<div id="rain" class="value">--</div></div>
+<div class="card">💦 Bơm<div id="pump" class="value">--</div></div>
+<div class="card">🌀 Quạt<div id="fan" class="value">--</div></div>
+<div class="card">🚨 Cảnh báo<div id="alarm" class="value">--</div></div>
+</div>
+
+<section class="panel">
+<h2>⚙️ Điều chỉnh hệ thống</h2>
+<div class="controls">
+<label>Đất khô (%)<input id="dry" type="number"></label>
+<label>Nhiệt độ bật quạt (°C)<input id="highTemp" type="number" step="0.1"></label>
+<label>Ngưỡng khói<input id="smokeThreshold" type="number"></label>
+<label>Ngưỡng mưa<input id="rainThreshold" type="number"></label>
+<label>Chế độ tự động<select id="auto"><option value="true">Tự động</option><option value="false">Thủ công</option></select></label>
+<label>Bơm cưỡng chế<select id="forcePump"><option value="false">Tắt</option><option value="true">Bật</option></select></label>
+<label>Quạt cưỡng chế<select id="forceFan"><option value="false">Tắt</option><option value="true">Bật</option></select></label>
+</div><br><button onclick="saveSettings()">Lưu cài đặt</button> <span id="saveMsg"></span>
+</section>
+
+<section class="panel"><h2>📈 Dữ liệu gần nhất</h2><table><thead><tr><th>Thời gian</th><th>A</th><th>B</th><th>Nhiệt độ</th><th>Khói</th><th>Bơm</th><th>Quạt</th></tr></thead><tbody id="history"></tbody></table></section>
+</main>
+<script>
+let sb;
+function configured(){return location.hash.length>5}
+function setup(){
+  const p=new URLSearchParams(location.hash.slice(1));
+  const url=p.get('url')||localStorage.nsl_url||'';
+  const key=p.get('key')||localStorage.nsl_key||'';
+  if(!url||!key){document.getElementById('status').textContent='Thiếu cấu hình Supabase';return false}
+  localStorage.nsl_url=url;localStorage.nsl_key=key;sb=window.supabase.createClient(url,key);return true;
+}
+async function load(){
+ if(!sb)return;
+ const {data,error}=await sb.from('greenhouse_readings').select('*').order('created_at',{ascending:false}).limit(30);
+ if(error){status.textContent='Database lỗi';return}
+ status.textContent='● Đã kết nối';status.className='status ok';
+ if(data[0])show(data[0]);
+ history.innerHTML=data.map(x=>'<tr><td>'+new Date(x.created_at).toLocaleString()+'</td><td>'+x.soil_a+'%</td><td>'+x.soil_b+'%</td><td>'+x.temperature+'°C</td><td>'+x.smoke+'</td><td>'+on(x.pump)+'</td><td>'+on(x.fan)+'</td></tr>').join('');
+ const s=(await sb.from('greenhouse_settings').select('*').eq('id',1).single()).data;
+ if(s){dry.value=s.soil_dry_threshold;highTemp.value=s.high_temperature;smokeThreshold.value=s.smoke_threshold;rainThreshold.value=s.rain_threshold;auto.value=s.auto_mode;forcePump.value=s.force_pump;forceFan.value=s.force_fan}
+}
+function on(v){return v?'BẬT':'TẮT'}
+function show(x){soilA.textContent=x.soil_a+'%';soilB.textContent=x.soil_b+'%';temp.textContent=(x.temperature??'--')+' °C';hum.textContent=(x.humidity??'--')+' %';smoke.textContent=x.smoke??'--';rain.textContent=x.raining?'ĐANG MƯA':'KHÔ';pump.textContent=on(x.pump);fan.textContent=on(x.fan);alarm.textContent=x.alarm?'NGUY HIỂM':'BÌNH THƯỜNG';alarm.className='value '+(x.alarm?'danger':'ok')}
+async function saveSettings(){
+ const payload={id:1,soil_dry_threshold:+dry.value,high_temperature:+highTemp.value,smoke_threshold:+smokeThreshold.value,rain_threshold:+rainThreshold.value,auto_mode:auto.value==='true',force_pump:forcePump.value==='true',force_fan:forceFan.value==='true',updated_at:new Date().toISOString()};
+ const {error}=await sb.from('greenhouse_settings').upsert(payload);
+ saveMsg.textContent=error?'Lỗi: '+error.message:'✓ Đã lưu';setTimeout(()=>saveMsg.textContent='',2500);
+}
+setup();load();setInterval(load,5000);
+</script>
+</body>
+</html>
