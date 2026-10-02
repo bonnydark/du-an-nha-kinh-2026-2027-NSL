@@ -7,6 +7,7 @@
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
+#include <time.h>
 
 // ===================== WIFI =====================
 const char* WIFI_SSID = "YOUR_WIFI_SSID";
@@ -15,6 +16,7 @@ const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
 // Supabase cloud database. Chỉ dùng ANON key, không dùng service_role trên ESP32.
 const char* SUPABASE_URL = "https://YOUR_PROJECT.supabase.co";
 const char* SUPABASE_ANON_KEY = "YOUR_SUPABASE_ANON_KEY";
+const char* CLOUD_WORKER_URL = "https://nsl-greenhouse.xzort.workers.dev";
 
 // ===================== PINOUT =====================
 constexpr uint8_t SOIL_A_PIN = 34;
@@ -70,6 +72,7 @@ unsigned long lastLcd = 0;
 unsigned long lastCloudRead = 0;
 unsigned long lastCloudUpload = 0;
 unsigned long lastCommandPoll = 0;
+unsigned long lastHeartbeat = 0;
 
 
 // ===================== HELPERS =====================
@@ -150,6 +153,19 @@ void syncSettingsFromCloud() {
   http.end();
 }
 
+void cloudPost(const String& path, const String& body) {
+  if (WiFi.status() != WL_CONNECTED) return;
+  WiFiClientSecure client; client.setInsecure(); HTTPClient http;
+  if (!http.begin(client, String(CLOUD_WORKER_URL)+path)) return;
+  http.addHeader("Content-Type","application/json");
+  int code=http.POST(body); Serial.printf("Worker %s HTTP=%d\\n",path.c_str(),code); http.end();
+}
+void sendHeartbeat() { cloudPost("/api/device/heartbeat", "{\"device_id\":\"esp32-01\"}"); }
+void uploadSensorsToWorker() {
+  String body="{\"device_id\":\"esp32-01\",\"soil_a\":"+String(data.soilA)+",\"soil_b\":"+String(data.soilB)+",\"temperature\":"+numberOrNull(data.temperature)+",\"humidity\":"+numberOrNull(data.humidity)+",\"smoke\":"+String(data.smoke)+",\"rain\":"+String(data.rain)+",\"raining\":"+jsonBool(data.raining)+",\"pump\":"+jsonBool(data.pump)+",\"fan\":"+jsonBool(data.fan)+",\"alarm\":"+jsonBool(data.alarm)+"}";
+  cloudPost("/api/device/sensors",body);
+}
+
 void pollCommandsFromCloud() {
   if (WiFi.status() != WL_CONNECTED || String(SUPABASE_URL).indexOf("YOUR_PROJECT") >= 0) return;
   WiFiClientSecure client; client.setInsecure(); HTTPClient http;
@@ -159,7 +175,7 @@ void pollCommandsFromCloud() {
     String device=cmd["device"]|""; bool on=cmd["state"]|false; long id=cmd["id"]|0;
     if(device=="pump"){forcePump=on; if(!autoMode){data.pump=on;setRelay(PUMP_RELAY_PIN,on);}}
     if(device=="fan"){forceFan=on; if(!autoMode){data.fan=on;setRelay(FAN_RELAY_PIN,on);}}
-    String patch="{\"acknowledged_at\":\""+String(millis())+"\"}";
+    time_t now=time(nullptr); String iso=String(ctime(&now)); iso.replace("\n",""); String patch="{\"acknowledged_at\":\""+iso+"\"}";
     // Acknowledgement timestamp is best-effort; command execution remains local even if the patch fails.
     HTTPClient patchHttp; String pu=String(SUPABASE_URL)+"/rest/v1/greenhouse_commands?id=eq."+String(id); if(patchHttp.begin(client,pu)){patchHttp.addHeader("apikey",SUPABASE_ANON_KEY);patchHttp.addHeader("Authorization",String("Bearer ")+SUPABASE_ANON_KEY);patchHttp.addHeader("Content-Type","application/json");patchHttp.addHeader("Prefer","return=minimal");patchHttp.sendRequest("PATCH",patch);patchHttp.end();}
   }}}
@@ -284,6 +300,7 @@ void connectWiFi() {
   Serial.println();
 
   if (WiFi.status() == WL_CONNECTED) {
+    configTime(7 * 3600, 0, "pool.ntp.org", "time.nist.gov");
     Serial.print("Dashboard: http://");
     Serial.println(WiFi.localIP());
   } else {
@@ -349,6 +366,11 @@ void loop() {
     readSensors();
   }
 
+  if (millis() - lastHeartbeat >= 10000) {
+    lastHeartbeat = millis();
+    sendHeartbeat();
+  }
+
   if (millis() - lastCommandPoll >= 5000) {
     lastCommandPoll = millis();
     pollCommandsFromCloud();
@@ -356,7 +378,7 @@ void loop() {
 
   if (millis() - lastCloudUpload >= 10000) {
     lastCloudUpload = millis();
-    uploadReadingToCloud();
+    uploadReadingToWorker();
   }
 
   if (millis() - lastLcd >= 5000) {
