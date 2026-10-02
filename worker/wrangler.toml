@@ -2,3 +2,8 @@ name = "nsl-greenhouse"
 main = "src/index.js"
 compatibility_date = "2026-10-02"
 workers_dev = true
+
+[vars]
+# Do NOT put secrets here. Set these with:
+# npx wrangler secret put SUPABASE_URL
+# npx wrangler secret put SUPABASE_ANON_KEY
