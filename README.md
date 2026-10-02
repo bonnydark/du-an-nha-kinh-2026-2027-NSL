@@ -34,4 +34,4 @@ Hệ thống giám sát và tự động hóa nhà kính dùng ESP32.
 Mở project bằng PlatformIO và nạp firmware cho ESP32. Điền SSID/password Wi-Fi trong `src/main.cpp`.
 
 Sau khi ESP32 kết nối mạng, Serial Monitor sẽ in địa chỉ IP. Mở IP đó trên điện thoại/máy tính cùng mạng Wi-Fi để xem dashboard.
-# - subnet eb https://30e71ebd.nsl-greenhouse.pages.dev/
+- subnet id https://nsl-greenhouse.xzort.workers.dev/
