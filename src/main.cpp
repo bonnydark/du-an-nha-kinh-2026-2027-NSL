@@ -3,11 +3,18 @@
 #include <WebServer.h>
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
-#include <DHT.h>\n#include <HTTPClient.h>\n#include <WiFiClientSecure.h>\n#include <ArduinoJson.h>
+#include <DHT.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+#include <ArduinoJson.h>
 
 // ===================== WIFI =====================
 const char* WIFI_SSID = "YOUR_WIFI_SSID";
-const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";\n\n// Supabase cloud database. Chỉ dùng ANON key, không dùng service_role trên ESP32.\nconst char* SUPABASE_URL = "https://YOUR_PROJECT.supabase.co";\nconst char* SUPABASE_ANON_KEY = "YOUR_SUPABASE_ANON_KEY";
+const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+
+// Supabase cloud database. Chỉ dùng ANON key, không dùng service_role trên ESP32.
+const char* SUPABASE_URL = "https://YOUR_PROJECT.supabase.co";
+const char* SUPABASE_ANON_KEY = "YOUR_SUPABASE_ANON_KEY";
 
 // ===================== PINOUT =====================
 constexpr uint8_t SOIL_A_PIN = 34;
@@ -30,7 +37,15 @@ constexpr bool RELAY_ACTIVE_HIGH = true;
 constexpr int SOIL_DRY_THRESHOLD = 35;   // %
 constexpr float HIGH_TEMP = 32.0;        // °C
 constexpr int SMOKE_THRESHOLD = 1800;    // ADC, cần hiệu chỉnh thực tế
-constexpr int RAIN_THRESHOLD = 1800;     // ADC, cần hiệu chỉnh thực tế\n\nint soilDryThreshold = SOIL_DRY_THRESHOLD;\nfloat highTemperature = HIGH_TEMP;\nint smokeThreshold = SMOKE_THRESHOLD;\nint rainThreshold = RAIN_THRESHOLD;\nbool autoMode = true;\nbool forcePump = false;\nbool forceFan = false;
+constexpr int RAIN_THRESHOLD = 1800;     // ADC, cần hiệu chỉnh thực tế
+
+int soilDryThreshold = SOIL_DRY_THRESHOLD;
+float highTemperature = HIGH_TEMP;
+int smokeThreshold = SMOKE_THRESHOLD;
+int rainThreshold = RAIN_THRESHOLD;
+bool autoMode = true;
+bool forcePump = false;
+bool forceFan = false;
 
 DHT dht(DHT_PIN, DHT_TYPE);
 LiquidCrystal_I2C lcd(0x27, 16, 2);
@@ -51,7 +66,11 @@ struct SensorData {
 
 SensorData data;
 unsigned long lastRead = 0;
-unsigned long lastLcd = 0;\nunsigned long lastCloudRead = 0;\nunsigned long lastCloudUpload = 0;
+unsigned long lastLcd = 0;
+unsigned long lastCloudRead = 0;
+unsigned long lastCloudUpload = 0;
+unsigned long lastCommandPoll = 0;
+
 
 // ===================== HELPERS =====================
 void setRelay(uint8_t pin, bool on) {
@@ -92,7 +111,7 @@ void readSensors() {
   bool dry = data.soilA < SOIL_DRY_THRESHOLD ||
              data.soilB < SOIL_DRY_THRESHOLD;
 
-  data.pump = dry && !data.raining;
+  data.pump = autoMode ? (dry && !data.raining) : forcePump;
 
   // Tự động bật quạt khi nhiệt độ cao.
   data.fan = autoMode ? (!isnan(data.temperature) && data.temperature >= highTemperature) : forceFan;
@@ -106,7 +125,65 @@ void readSensors() {
   digitalWrite(STATUS_LED_PIN, data.alarm ? HIGH : LOW);
 }
 
-void syncSettingsFromCloud() {\n  if (WiFi.status() != WL_CONNECTED || String(SUPABASE_URL).indexOf("YOUR_PROJECT") >= 0) return;\n  WiFiClientSecure client; client.setInsecure();\n  HTTPClient http;\n  String url = String(SUPABASE_URL) + "/rest/v1/greenhouse_settings?select=*&id=eq.1";\n  if (!http.begin(client, url)) return;\n  http.addHeader("apikey", SUPABASE_ANON_KEY);\n  http.addHeader("Authorization", String("Bearer ") + SUPABASE_ANON_KEY);\n  int code = http.GET();\n  if (code == 200) {\n    DynamicJsonDocument doc(2048);\n    if (deserializeJson(doc, http.getString()) == DeserializationError::Ok && doc.size() > 0) {\n      JsonObject s = doc[0];\n      soilDryThreshold = s["soil_dry_threshold"] | SOIL_DRY_THRESHOLD;\n      highTemperature = s["high_temperature"] | HIGH_TEMP;\n      smokeThreshold = s["smoke_threshold"] | SMOKE_THRESHOLD;\n      rainThreshold = s["rain_threshold"] | RAIN_THRESHOLD;\n      autoMode = s["auto_mode"] | true;\n      forcePump = s["force_pump"] | false;\n      forceFan = s["force_fan"] | false;\n    }\n  }\n  http.end();\n}\n\nvoid uploadReadingToCloud() {\n  if (WiFi.status() != WL_CONNECTED || String(SUPABASE_URL).indexOf("YOUR_PROJECT") >= 0) return;\n  WiFiClientSecure client; client.setInsecure();\n  HTTPClient http;\n  String url = String(SUPABASE_URL) + "/rest/v1/greenhouse_readings";\n  if (!http.begin(client, url)) return;\n  http.addHeader("apikey", SUPABASE_ANON_KEY);\n  http.addHeader("Authorization", String("Bearer ") + SUPABASE_ANON_KEY);\n  http.addHeader("Content-Type", "application/json");\n  http.addHeader("Prefer", "return=minimal");\n  String body = "{\"soil_a\":" + String(data.soilA) + ",\"soil_b\":" + String(data.soilB) + ",\"temperature\":" + numberOrNull(data.temperature) + ",\"humidity\":" + numberOrNull(data.humidity) + ",\"smoke\":" + String(data.smoke) + ",\"rain\":" + String(data.rain) + ",\"raining\":" + jsonBool(data.raining) + ",\"pump\":" + jsonBool(data.pump) + ",\"fan\":" + jsonBool(data.fan) + ",\"alarm\":" + jsonBool(data.alarm) + "}";\n  int code = http.POST(body);\n  Serial.printf("Cloud upload HTTP=%d\\n", code);\n  http.end();\n}\n\nvoid updateLcd() {
+void syncSettingsFromCloud() {
+  if (WiFi.status() != WL_CONNECTED || String(SUPABASE_URL).indexOf("YOUR_PROJECT") >= 0) return;
+  WiFiClientSecure client; client.setInsecure();
+  HTTPClient http;
+  String url = String(SUPABASE_URL) + "/rest/v1/greenhouse_settings?select=*&id=eq.1";
+  if (!http.begin(client, url)) return;
+  http.addHeader("apikey", SUPABASE_ANON_KEY);
+  http.addHeader("Authorization", String("Bearer ") + SUPABASE_ANON_KEY);
+  int code = http.GET();
+  if (code == 200) {
+    DynamicJsonDocument doc(2048);
+    if (deserializeJson(doc, http.getString()) == DeserializationError::Ok && doc.size() > 0) {
+      JsonObject s = doc[0];
+      soilDryThreshold = s["soil_dry_threshold"] | SOIL_DRY_THRESHOLD;
+      highTemperature = s["high_temperature"] | HIGH_TEMP;
+      smokeThreshold = s["smoke_threshold"] | SMOKE_THRESHOLD;
+      rainThreshold = s["rain_threshold"] | RAIN_THRESHOLD;
+      autoMode = s["auto_mode"] | true;
+      forcePump = s["force_pump"] | false;
+      forceFan = s["force_fan"] | false;
+    }
+  }
+  http.end();
+}
+
+void pollCommandsFromCloud() {
+  if (WiFi.status() != WL_CONNECTED || String(SUPABASE_URL).indexOf("YOUR_PROJECT") >= 0) return;
+  WiFiClientSecure client; client.setInsecure(); HTTPClient http;
+  String url=String(SUPABASE_URL)+"/rest/v1/greenhouse_commands?select=*&acknowledged_at=is.null&order=id.asc&limit=10";
+  if(!http.begin(client,url)) return; http.addHeader("apikey",SUPABASE_ANON_KEY); http.addHeader("Authorization",String("Bearer ")+SUPABASE_ANON_KEY);
+  if(http.GET()==200){ DynamicJsonDocument doc(4096); if(deserializeJson(doc,http.getString())==DeserializationError::Ok){ for(JsonObject cmd:doc.as<JsonArray>()){
+    String device=cmd["device"]|""; bool on=cmd["state"]|false; long id=cmd["id"]|0;
+    if(device=="pump"){forcePump=on; if(!autoMode){data.pump=on;setRelay(PUMP_RELAY_PIN,on);}}
+    if(device=="fan"){forceFan=on; if(!autoMode){data.fan=on;setRelay(FAN_RELAY_PIN,on);}}
+    String patch="{\"acknowledged_at\":\""+String(millis())+"\"}";
+    // Acknowledgement timestamp is best-effort; command execution remains local even if the patch fails.
+    HTTPClient patchHttp; String pu=String(SUPABASE_URL)+"/rest/v1/greenhouse_commands?id=eq."+String(id); if(patchHttp.begin(client,pu)){patchHttp.addHeader("apikey",SUPABASE_ANON_KEY);patchHttp.addHeader("Authorization",String("Bearer ")+SUPABASE_ANON_KEY);patchHttp.addHeader("Content-Type","application/json");patchHttp.addHeader("Prefer","return=minimal");patchHttp.sendRequest("PATCH",patch);patchHttp.end();}
+  }}}
+  http.end();
+}
+
+void uploadReadingToCloud() {
+  if (WiFi.status() != WL_CONNECTED || String(SUPABASE_URL).indexOf("YOUR_PROJECT") >= 0) return;
+  WiFiClientSecure client; client.setInsecure();
+  HTTPClient http;
+  String url = String(SUPABASE_URL) + "/rest/v1/greenhouse_readings";
+  if (!http.begin(client, url)) return;
+  http.addHeader("apikey", SUPABASE_ANON_KEY);
+  http.addHeader("Authorization", String("Bearer ") + SUPABASE_ANON_KEY);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("Prefer", "return=minimal");
+  String body = "{\"soil_a\":" + String(data.soilA) + ",\"soil_b\":" + String(data.soilB) + ",\"temperature\":" + numberOrNull(data.temperature) + ",\"humidity\":" + numberOrNull(data.humidity) + ",\"smoke\":" + String(data.smoke) + ",\"rain\":" + String(data.rain) + ",\"raining\":" + jsonBool(data.raining) + ",\"pump\":" + jsonBool(data.pump) + ",\"fan\":" + jsonBool(data.fan) + ",\"alarm\":" + jsonBool(data.alarm) + "}";
+  int code = http.POST(body);
+  Serial.printf("Cloud upload HTTP=%d\
+", code);
+  http.end();
+}
+
+void updateLcd() {
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print("A:");
@@ -256,7 +333,8 @@ void loop() {
     lastRead = millis();
     readSensors();
 
-    Serial.printf("Soil A=%d%% | Soil B=%d%% | T=%.1f C | H=%.1f%% | MQ2=%d | Rain=%d | Pump=%s | Fan=%s | Alarm=%s\n",
+    Serial.printf("Soil A=%d%% | Soil B=%d%% | T=%.1f C | H=%.1f%% | MQ2=%d | Rain=%d | Pump=%s | Fan=%s | Alarm=%s
+",
       data.soilA, data.soilB, data.temperature, data.humidity,
       data.smoke, data.rain,
       data.pump ? "ON" : "OFF",
@@ -264,7 +342,24 @@ void loop() {
       data.alarm ? "ON" : "OFF");
   }
 
-  if (millis() - lastCloudRead >= 10000) {\n    lastCloudRead = millis();\n    syncSettingsFromCloud();\n    readSensors();\n  }\n\n  if (millis() - lastCloudUpload >= 10000) {\n    lastCloudUpload = millis();\n    uploadReadingToCloud();\n  }\n\n  if (millis() - lastLcd >= 5000) {
+  if (millis() - lastCloudRead >= 10000) {
+    lastCloudRead = millis();
+    syncSettingsFromCloud();
+    pollCommandsFromCloud();
+    readSensors();
+  }
+
+  if (millis() - lastCommandPoll >= 5000) {
+    lastCommandPoll = millis();
+    pollCommandsFromCloud();
+  }
+
+  if (millis() - lastCloudUpload >= 10000) {
+    lastCloudUpload = millis();
+    uploadReadingToCloud();
+  }
+
+  if (millis() - lastLcd >= 5000) {
     lastLcd = millis();
     updateLcd();
   }
